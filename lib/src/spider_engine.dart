@@ -151,7 +151,7 @@ class SpiderEngine {
   }
 
   static MoveHint? findHint(SpiderGameState state) {
-    MoveHint? bestHint;
+    _RankedMove? bestMove;
     var bestScore = -1 << 20;
 
     for (
@@ -161,59 +161,16 @@ class SpiderEngine {
     ) {
       final column = state.tableau[sourceColumn];
       for (var startIndex = 0; startIndex < column.length; startIndex++) {
-        if (!canSelectStack(state, sourceColumn, startIndex)) {
-          continue;
-        }
-
-        final moving = column.sublist(startIndex);
-        for (
-          var targetColumn = 0;
-          targetColumn < state.tableau.length;
-          targetColumn++
-        ) {
-          if (targetColumn == sourceColumn) {
-            continue;
-          }
-
-          final target = state.tableau[targetColumn];
-          if (!_canPlaceStack(moving, target)) {
-            continue;
-          }
-
-          var score = 0;
-          if (target.isEmpty) {
-            score -= 20;
-          } else {
-            score += 40;
-            if (target.last.suit == moving.first.suit) {
-              score += 35;
-            }
-          }
-
-          score += moving.length * 3;
-
-          if (startIndex > 0 && !column[startIndex - 1].faceUp) {
-            score += 50;
-          }
-
-          if (_wouldCreateLongerRun(moving, target)) {
-            score += 30;
-          }
-
-          if (score > bestScore) {
-            bestScore = score;
-            bestHint = MoveHint.move(
-              fromColumn: sourceColumn,
-              fromIndex: startIndex,
-              toColumn: targetColumn,
-            );
-          }
+        final candidate = _bestMoveForStack(state, sourceColumn, startIndex);
+        if (candidate != null && candidate.score > bestScore) {
+          bestScore = candidate.score;
+          bestMove = candidate;
         }
       }
     }
 
-    if (bestHint != null) {
-      return bestHint;
+    if (bestMove != null) {
+      return bestMove.toHint();
     }
 
     if (canDealFromStock(state)) {
@@ -221,6 +178,14 @@ class SpiderEngine {
     }
 
     return null;
+  }
+
+  static MoveHint? bestAutoMove(
+    SpiderGameState state,
+    int fromColumn,
+    int fromIndex,
+  ) {
+    return _bestMoveForStack(state, fromColumn, fromIndex)?.toHint();
   }
 
   static List<List<SpiderCard>> _cloneTableau(List<List<SpiderCard>> tableau) {
@@ -252,6 +217,107 @@ class SpiderEngine {
     }
 
     return target.last.rank == moving.first.rank + 1;
+  }
+
+  static _RankedMove? _bestMoveForStack(
+    SpiderGameState state,
+    int sourceColumn,
+    int startIndex,
+  ) {
+    if (!canSelectStack(state, sourceColumn, startIndex)) {
+      return null;
+    }
+
+    final source = state.tableau[sourceColumn];
+    final moving = source.sublist(startIndex);
+    _RankedMove? bestMove;
+    var bestScore = -1 << 20;
+
+    for (
+      var targetColumn = 0;
+      targetColumn < state.tableau.length;
+      targetColumn++
+    ) {
+      if (targetColumn == sourceColumn) {
+        continue;
+      }
+
+      final target = state.tableau[targetColumn];
+      if (!_canPlaceStack(moving, target)) {
+        continue;
+      }
+
+      final score = _scoreMove(
+        state,
+        sourceColumn: sourceColumn,
+        startIndex: startIndex,
+        targetColumn: targetColumn,
+        moving: moving,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = _RankedMove(
+          fromColumn: sourceColumn,
+          fromIndex: startIndex,
+          toColumn: targetColumn,
+          score: score,
+        );
+      }
+    }
+
+    return bestMove;
+  }
+
+  static int _scoreMove(
+    SpiderGameState state, {
+    required int sourceColumn,
+    required int startIndex,
+    required int targetColumn,
+    required List<SpiderCard> moving,
+  }) {
+    final source = state.tableau[sourceColumn];
+    final target = state.tableau[targetColumn];
+    var score = 0;
+
+    if (target.isEmpty) {
+      score -= 120;
+      if (source.length == moving.length) {
+        score -= 25;
+      }
+    } else {
+      score += 80;
+      if (target.last.suit == moving.first.suit) {
+        score += 180;
+      }
+    }
+
+    if (startIndex > 0 && !source[startIndex - 1].faceUp) {
+      score += 90;
+    }
+
+    if (_wouldCreateLongerRun(moving, target)) {
+      score += 70;
+    }
+
+    if (_wouldCompleteRun(target, moving)) {
+      score += 160;
+    }
+
+    score += moving.length * 4;
+
+    return score;
+  }
+
+  static bool _wouldCompleteRun(
+    List<SpiderCard> target,
+    List<SpiderCard> moving,
+  ) {
+    final combined = <SpiderCard>[...target, ...moving];
+    if (combined.length < 13) {
+      return false;
+    }
+
+    return _isCompleteRun(combined.sublist(combined.length - 13));
   }
 
   static _CollapseResult _collapseRuns(List<List<SpiderCard>> tableau) {
@@ -346,4 +412,26 @@ class _CollapseResult {
   final List<List<SpiderCard>> tableau;
   final int runsRemoved;
   final int revealedCards;
+}
+
+class _RankedMove {
+  const _RankedMove({
+    required this.fromColumn,
+    required this.fromIndex,
+    required this.toColumn,
+    required this.score,
+  });
+
+  final int fromColumn;
+  final int fromIndex;
+  final int toColumn;
+  final int score;
+
+  MoveHint toHint() {
+    return MoveHint.move(
+      fromColumn: fromColumn,
+      fromIndex: fromIndex,
+      toColumn: toColumn,
+    );
+  }
 }

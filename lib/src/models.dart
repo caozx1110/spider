@@ -68,6 +68,10 @@ class SpiderCard {
     _ => '$rank',
   };
 
+  String get compactLabel => '${suit.symbol}$rankLabel';
+
+  String get spokenLabel => '${suit.label} $rankLabel';
+
   SpiderCard copyWith({bool? faceUp}) {
     return SpiderCard(
       id: id,
@@ -238,6 +242,10 @@ class MoveHint {
   final int? fromColumn;
   final int? fromIndex;
   final int? toColumn;
+
+  bool get isMove => kind == HintKind.move;
+
+  bool get isDeal => kind == HintKind.deal;
 }
 
 class AchievementDefinition {

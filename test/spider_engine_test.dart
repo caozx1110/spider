@@ -91,6 +91,33 @@ void main() {
       expect(next.tableau[1], isEmpty);
       expect(next.sequencesCompletedThisGame, 1);
     });
+
+    test('best auto move prefers extending a same-suit chain', () {
+      final state = SpiderGameState(
+        difficulty: SpiderDifficulty.fourSuits,
+        tableau: [
+          [_card('moving', SpiderSuit.spades, 7, true)],
+          [_card('same_suit', SpiderSuit.spades, 8, true)],
+          [_card('other_suit', SpiderSuit.hearts, 8, true)],
+          for (var index = 0; index < 7; index++) <SpiderCard>[],
+        ],
+        stock: const [],
+        completedRuns: 0,
+        moves: 0,
+        score: 500,
+        undoCount: 0,
+        stockDealsUsed: 0,
+        hiddenCardsRevealed: 0,
+        hintsUsed: 0,
+        sequencesCompletedThisGame: 0,
+        elapsedSeconds: 0,
+      );
+
+      final autoMove = SpiderEngine.bestAutoMove(state, 0, 0);
+
+      expect(autoMove, isNotNull);
+      expect(autoMove!.toColumn, 1);
+    });
   });
 
   group('SpiderEngine stock dealing', () {
@@ -118,6 +145,35 @@ void main() {
       );
 
       expect(SpiderEngine.dealFromStock(state), isNull);
+    });
+  });
+
+  group('SpiderEngine hints', () {
+    test('hint selection follows the same best move preference', () {
+      final state = SpiderGameState(
+        difficulty: SpiderDifficulty.fourSuits,
+        tableau: [
+          [_card('moving', SpiderSuit.spades, 7, true)],
+          [_card('same_suit', SpiderSuit.spades, 8, true)],
+          [_card('other_suit', SpiderSuit.hearts, 8, true)],
+          for (var index = 0; index < 7; index++) <SpiderCard>[],
+        ],
+        stock: const [],
+        completedRuns: 0,
+        moves: 0,
+        score: 500,
+        undoCount: 0,
+        stockDealsUsed: 0,
+        hiddenCardsRevealed: 0,
+        hintsUsed: 0,
+        sequencesCompletedThisGame: 0,
+        elapsedSeconds: 0,
+      );
+
+      final hint = SpiderEngine.findHint(state);
+
+      expect(hint, isNotNull);
+      expect(hint!.toColumn, 1);
     });
   });
 }

@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -66,6 +67,11 @@ class SpiderHome extends StatefulWidget {
 class _SpiderHomeState extends State<SpiderHome> {
   late final SpiderController _controller;
   bool _showingAchievement = false;
+  Timer? _titleComboTimer;
+  Timer? _secretRunTimer;
+  int _titleTapCount = 0;
+  int _secretRunToken = 0;
+  String? _secretStatus;
 
   @override
   void initState() {
@@ -77,9 +83,38 @@ class _SpiderHomeState extends State<SpiderHome> {
 
   @override
   void dispose() {
+    _titleComboTimer?.cancel();
+    _secretRunTimer?.cancel();
     _controller.removeListener(_handleControllerAnnouncements);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _handleTitleTap() {
+    _titleComboTimer?.cancel();
+    _titleTapCount++;
+
+    if (_titleTapCount >= 3) {
+      _titleTapCount = 0;
+      _secretRunTimer?.cancel();
+      setState(() {
+        _secretRunToken++;
+        _secretStatus = '彩蛋：夜织者沿着牌桌巡游了一圈。';
+      });
+      _secretRunTimer = Timer(const Duration(seconds: 6), () {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _secretStatus = null;
+        });
+      });
+      return;
+    }
+
+    _titleComboTimer = Timer(const Duration(milliseconds: 900), () {
+      _titleTapCount = 0;
+    });
   }
 
   Future<void> _handleControllerAnnouncements() async {
@@ -232,7 +267,9 @@ class _SpiderHomeState extends State<SpiderHome> {
                           state: state,
                           selection: _controller.selection,
                           hint: _controller.hint,
+                          hintPulseToken: _controller.hintPulseToken,
                           onCardTap: _controller.onCardTapped,
+                          onCardLongPress: _controller.onCardLongPressed,
                           onColumnTap: _controller.onColumnTapped,
                           onDealFromStock: _controller.dealFromStock,
                         );
@@ -247,12 +284,17 @@ class _SpiderHomeState extends State<SpiderHome> {
                           onHint: _controller.requestHint,
                           onDeal: _controller.dealFromStock,
                           onAchievements: _showAchievementSheet,
+                          statusText: _controller.statusMessage,
+                          secretStatus: _secretStatus,
+                          onTitleTap: _handleTitleTap,
                         );
 
                         final sidePanel = _SidePanel(
                           state: state,
                           progress: progress,
                           onAchievements: _showAchievementSheet,
+                          statusText:
+                              _secretStatus ?? _controller.statusMessage,
                         );
 
                         return Stack(
@@ -291,6 +333,17 @@ class _SpiderHomeState extends State<SpiderHome> {
                                   onShowAchievements: _showAchievementSheet,
                                 ),
                               ),
+                            if (_secretStatus != null)
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                top: compact ? 94 : 110,
+                                child: IgnorePointer(
+                                  child: _SpiderMascotRun(
+                                    runToken: _secretRunToken,
+                                  ),
+                                ),
+                              ),
                           ],
                         );
                       },
@@ -317,6 +370,9 @@ class _HeaderBar extends StatelessWidget {
     required this.onHint,
     required this.onDeal,
     required this.onAchievements,
+    required this.statusText,
+    required this.secretStatus,
+    required this.onTitleTap,
   });
 
   final SpiderGameState state;
@@ -328,6 +384,9 @@ class _HeaderBar extends StatelessWidget {
   final Future<void> Function() onHint;
   final Future<void> Function() onDeal;
   final Future<void> Function() onAchievements;
+  final String statusText;
+  final String? secretStatus;
+  final VoidCallback onTitleTap;
 
   @override
   Widget build(BuildContext context) {
@@ -341,24 +400,28 @@ class _HeaderBar extends StatelessWidget {
             runSpacing: 16,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Silken Spider',
-                    style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                      letterSpacing: 0.4,
-                      height: 0.95,
+              GestureDetector(
+                onTap: onTitleTap,
+                behavior: HitTestBehavior.opaque,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Silken Spider',
+                      style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                        letterSpacing: 0.4,
+                        height: 0.95,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '经典蜘蛛纸牌，带成就、断点续局和跨平台界面。',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyMedium?.copyWith(color: _Palette.paperSoft),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    Text(
+                      '经典蜘蛛纸牌，带成就、断点续局和跨平台界面。',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: _Palette.paperSoft,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               _InfoPill(label: '当前难度', value: state.difficulty.label),
               _InfoPill(label: '总胜场', value: '${progress.gamesWon}'),
@@ -397,6 +460,15 @@ class _HeaderBar extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            child: _StatusStrip(
+              key: ValueKey(secretStatus ?? statusText),
+              text: secretStatus ?? statusText,
+              secret: secretStatus != null,
+            ),
+          ),
         ],
       ),
     );
@@ -408,11 +480,13 @@ class _SidePanel extends StatelessWidget {
     required this.state,
     required this.progress,
     required this.onAchievements,
+    required this.statusText,
   });
 
   final SpiderGameState state;
   final PlayerProgress progress;
   final Future<void> Function() onAchievements;
+  final String statusText;
 
   @override
   Widget build(BuildContext context) {
@@ -454,7 +528,22 @@ class _SidePanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 18),
-          const _SectionTitle(title: '局面提示', subtitle: '库存发牌前必须保证 10 列都不为空'),
+          const _SectionTitle(
+            title: '局面提示',
+            subtitle: '单击会自动尝试最佳落点，长按进入手动选牌模式',
+          ),
+          const SizedBox(height: 10),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            child: Text(
+              statusText,
+              key: ValueKey(statusText),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: _Palette.paperSoft,
+                height: 1.45,
+              ),
+            ),
+          ),
           const SizedBox(height: 10),
           Wrap(
             spacing: 8,
@@ -504,7 +593,9 @@ class _GameBoard extends StatelessWidget {
     required this.state,
     required this.selection,
     required this.hint,
+    required this.hintPulseToken,
     required this.onCardTap,
+    required this.onCardLongPress,
     required this.onColumnTap,
     required this.onDealFromStock,
   });
@@ -512,7 +603,9 @@ class _GameBoard extends StatelessWidget {
   final SpiderGameState state;
   final SpiderSelection? selection;
   final MoveHint? hint;
+  final int hintPulseToken;
   final void Function(int columnIndex, int cardIndex) onCardTap;
+  final void Function(int columnIndex, int cardIndex) onCardLongPress;
   final void Function(int columnIndex) onColumnTap;
   final Future<void> Function() onDealFromStock;
 
@@ -533,6 +626,16 @@ class _GameBoard extends StatelessWidget {
           final faceUpOffset = math.max(cardHeight * 0.28, 18.0);
           final faceDownOffset = math.max(cardHeight * 0.16, 10.0);
 
+          double stackOffset(List<SpiderCard> cards, int index) {
+            var offset = 0.0;
+            for (var cursor = 1; cursor <= index; cursor++) {
+              offset += cards[cursor - 1].faceUp
+                  ? faceUpOffset
+                  : faceDownOffset;
+            }
+            return offset;
+          }
+
           double columnHeight(List<SpiderCard> cards) {
             if (cards.isEmpty) {
               return cardHeight * 1.4;
@@ -550,6 +653,27 @@ class _GameBoard extends StatelessWidget {
             maxColumnHeight = math.max(maxColumnHeight, columnHeight(column));
           }
 
+          Rect? hintSourceRect;
+          Rect? hintTargetRect;
+          if (hint?.isMove ?? false) {
+            final sourceCards = state.tableau[hint!.fromColumn!];
+            final targetCards = state.tableau[hint!.toColumn!];
+            hintSourceRect = Rect.fromLTWH(
+              hint!.fromColumn! * (cardWidth + gap),
+              stackOffset(sourceCards, hint!.fromIndex!),
+              cardWidth,
+              cardHeight,
+            );
+            hintTargetRect = Rect.fromLTWH(
+              hint!.toColumn! * (cardWidth + gap),
+              targetCards.isEmpty
+                  ? cardHeight * 0.16
+                  : stackOffset(targetCards, targetCards.length - 1),
+              cardWidth,
+              cardHeight,
+            );
+          }
+
           return Column(
             children: [
               Wrap(
@@ -563,6 +687,7 @@ class _GameBoard extends StatelessWidget {
                     height: cardHeight,
                     groupsRemaining: state.stockDealsRemaining,
                     highlighted: hint?.kind == HintKind.deal,
+                    pulseToken: hintPulseToken,
                     enabled: state.stockDealsRemaining > 0,
                     onTap: state.stockDealsRemaining > 0
                         ? onDealFromStock
@@ -583,29 +708,55 @@ class _GameBoard extends StatelessWidget {
                     padding: const EdgeInsets.only(right: 6),
                     child: SizedBox(
                       height: maxColumnHeight + 8,
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Stack(
                         children: [
-                          for (
-                            var columnIndex = 0;
-                            columnIndex < state.tableau.length;
-                            columnIndex++
-                          ) ...[
-                            _TableauColumn(
-                              cards: state.tableau[columnIndex],
-                              columnIndex: columnIndex,
-                              width: cardWidth,
-                              height: maxColumnHeight,
-                              faceUpOffset: faceUpOffset,
-                              faceDownOffset: faceDownOffset,
-                              selection: selection,
-                              hint: hint,
-                              onCardTap: onCardTap,
-                              onColumnTap: onColumnTap,
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (
+                                var columnIndex = 0;
+                                columnIndex < state.tableau.length;
+                                columnIndex++
+                              ) ...[
+                                _TableauColumn(
+                                  cards: state.tableau[columnIndex],
+                                  columnIndex: columnIndex,
+                                  width: cardWidth,
+                                  height: maxColumnHeight,
+                                  faceUpOffset: faceUpOffset,
+                                  faceDownOffset: faceDownOffset,
+                                  selection: selection,
+                                  hint: hint,
+                                  hintPulseToken: hintPulseToken,
+                                  onCardTap: onCardTap,
+                                  onCardLongPress: onCardLongPress,
+                                  onColumnTap: onColumnTap,
+                                ),
+                                if (columnIndex < state.tableau.length - 1)
+                                  SizedBox(width: gap),
+                              ],
+                            ],
+                          ),
+                          if (hint?.isMove ?? false)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: TweenAnimationBuilder<double>(
+                                  key: ValueKey('hint-thread-$hintPulseToken'),
+                                  tween: Tween(begin: 0, end: 1),
+                                  duration: const Duration(milliseconds: 1400),
+                                  curve: Curves.easeInOutCubic,
+                                  builder: (context, value, _) {
+                                    return CustomPaint(
+                                      painter: _HintThreadPainter(
+                                        sourceRect: hintSourceRect!,
+                                        targetRect: hintTargetRect!,
+                                        progress: value,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
                             ),
-                            if (columnIndex < state.tableau.length - 1)
-                              SizedBox(width: gap),
-                          ],
                         ],
                       ),
                     ),
@@ -630,7 +781,9 @@ class _TableauColumn extends StatelessWidget {
     required this.faceDownOffset,
     required this.selection,
     required this.hint,
+    required this.hintPulseToken,
     required this.onCardTap,
+    required this.onCardLongPress,
     required this.onColumnTap,
   });
 
@@ -642,7 +795,9 @@ class _TableauColumn extends StatelessWidget {
   final double faceDownOffset;
   final SpiderSelection? selection;
   final MoveHint? hint;
+  final int hintPulseToken;
   final void Function(int columnIndex, int cardIndex) onCardTap;
+  final void Function(int columnIndex, int cardIndex) onCardLongPress;
   final void Function(int columnIndex) onColumnTap;
 
   double _cardOffset(int index) {
@@ -658,64 +813,98 @@ class _TableauColumn extends StatelessWidget {
     final targetHint =
         hint?.kind == HintKind.move && hint?.toColumn == columnIndex;
 
-    return GestureDetector(
-      onTap: () => onColumnTap(columnIndex),
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: targetHint
-                ? _Palette.brass
-                : Colors.white.withValues(alpha: cards.isEmpty ? 0.18 : 0.08),
-            width: targetHint ? 2.2 : 1.2,
-          ),
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Colors.white.withValues(alpha: 0.06),
-              Colors.white.withValues(alpha: 0.02),
-            ],
-          ),
-        ),
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            if (cards.isEmpty)
-              Align(
-                child: Icon(
-                  Icons.add_rounded,
-                  color: Colors.white.withValues(alpha: 0.28),
-                  size: width * 0.58,
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('column-$columnIndex-$hintPulseToken-$targetHint'),
+      tween: Tween(begin: 0, end: 1),
+      duration: targetHint
+          ? const Duration(milliseconds: 1200)
+          : const Duration(milliseconds: 1),
+      builder: (context, value, _) {
+        final pulse = targetHint ? math.sin(value * math.pi) : 0.0;
+        return Transform.scale(
+          scale: 1 + pulse * 0.012,
+          child: GestureDetector(
+            onTap: () => onColumnTap(columnIndex),
+            child: Container(
+              width: width,
+              height: height,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: targetHint
+                      ? Color.lerp(
+                          _Palette.brass,
+                          _Palette.paper,
+                          pulse * 0.35,
+                        )!
+                      : Colors.white.withValues(
+                          alpha: cards.isEmpty ? 0.18 : 0.08,
+                        ),
+                  width: targetHint ? 2.2 : 1.2,
                 ),
-              ),
-            for (var index = 0; index < cards.length; index++)
-              Positioned(
-                top: _cardOffset(index),
-                left: 0,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: cards[index].faceUp
-                      ? () => onCardTap(columnIndex, index)
-                      : null,
-                  child: _PlayingCard(
-                    card: cards[index],
-                    width: width,
-                    selected:
-                        selection?.column == columnIndex &&
-                        index >= (selection?.index ?? 999),
-                    hintSource:
-                        hint?.kind == HintKind.move &&
-                        hint?.fromColumn == columnIndex &&
-                        index >= (hint?.fromIndex ?? 999),
-                  ),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.06 + pulse * 0.06),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
                 ),
+                boxShadow: targetHint
+                    ? [
+                        BoxShadow(
+                          color: _Palette.brass.withValues(
+                            alpha: 0.12 + pulse * 0.12,
+                          ),
+                          blurRadius: 18,
+                          offset: const Offset(0, 10),
+                        ),
+                      ]
+                    : null,
               ),
-          ],
-        ),
-      ),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  if (cards.isEmpty)
+                    Align(
+                      child: Icon(
+                        Icons.add_rounded,
+                        color: Colors.white.withValues(alpha: 0.28),
+                        size: width * 0.58,
+                      ),
+                    ),
+                  for (var index = 0; index < cards.length; index++)
+                    Positioned(
+                      top: _cardOffset(index),
+                      left: 0,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: cards[index].faceUp
+                            ? () => onCardTap(columnIndex, index)
+                            : null,
+                        onLongPress: cards[index].faceUp
+                            ? () => onCardLongPress(columnIndex, index)
+                            : null,
+                        child: _PlayingCard(
+                          card: cards[index],
+                          width: width,
+                          selected:
+                              selection?.column == columnIndex &&
+                              index >= (selection?.index ?? 999),
+                          hintSource:
+                              hint?.kind == HintKind.move &&
+                              hint?.fromColumn == columnIndex &&
+                              index >= (hint?.fromIndex ?? 999),
+                          hintPulseToken: hintPulseToken,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -726,12 +915,14 @@ class _PlayingCard extends StatelessWidget {
     required this.width,
     required this.selected,
     required this.hintSource,
+    required this.hintPulseToken,
   });
 
   final SpiderCard card;
   final double width;
   final bool selected;
   final bool hintSource;
+  final int hintPulseToken;
 
   @override
   Widget build(BuildContext context) {
@@ -743,41 +934,54 @@ class _PlayingCard extends StatelessWidget {
         ? _Palette.paper
         : null;
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOutCubic,
-      width: width,
-      height: height,
-      decoration: BoxDecoration(
-        borderRadius: radius,
-        border: Border.all(
-          color: accent ?? Colors.black.withValues(alpha: 0.08),
-          width: accent != null ? 2.2 : 1.0,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: (accent ?? Colors.black).withValues(
-              alpha: accent != null ? 0.28 : 0.18,
-            ),
-            blurRadius: selected ? 20 : 12,
-            offset: const Offset(0, 8),
-          ),
-        ],
-        gradient: card.faceUp
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFFFFFCF4), Color(0xFFF2E6C9)],
-              )
-            : const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF183631), Color(0xFF0A1A18)],
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('card-${card.id}-$hintPulseToken-$hintSource-$selected'),
+      tween: Tween(begin: 0, end: 1),
+      duration: hintSource
+          ? const Duration(milliseconds: 1100)
+          : const Duration(milliseconds: 1),
+      builder: (context, value, _) {
+        final pulse = hintSource ? math.sin(value * math.pi) : 0.0;
+        return Transform.translate(
+          offset: Offset(0, -6 * pulse),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(
+                color: accent ?? Colors.black.withValues(alpha: 0.08),
+                width: accent != null ? 2.2 : 1.0,
               ),
-      ),
-      child: card.faceUp
-          ? _FaceUpCard(card: card)
-          : _FaceDownCard(width: width, accent: accent != null),
+              boxShadow: [
+                BoxShadow(
+                  color: (accent ?? Colors.black).withValues(
+                    alpha: accent != null ? 0.28 + pulse * 0.1 : 0.18,
+                  ),
+                  blurRadius: selected ? 20 : 12 + pulse * 10,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+              gradient: card.faceUp
+                  ? const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFFFFFCF4), Color(0xFFF2E6C9)],
+                    )
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF183631), Color(0xFF0A1A18)],
+                    ),
+            ),
+            child: card.faceUp
+                ? _FaceUpCard(card: card)
+                : _FaceDownCard(width: width, accent: accent != null),
+          ),
+        );
+      },
     );
   }
 }
@@ -894,6 +1098,7 @@ class _StockPile extends StatelessWidget {
     required this.height,
     required this.groupsRemaining,
     required this.highlighted,
+    required this.pulseToken,
     required this.enabled,
     required this.onTap,
   });
@@ -902,6 +1107,7 @@ class _StockPile extends StatelessWidget {
   final double height;
   final int groupsRemaining;
   final bool highlighted;
+  final int pulseToken;
   final bool enabled;
   final Future<void> Function()? onTap;
 
@@ -910,72 +1116,92 @@ class _StockPile extends StatelessWidget {
     final borderColor = highlighted
         ? _Palette.brass
         : Colors.white.withValues(alpha: 0.22);
-    return GestureDetector(
-      onTap: enabled ? onTap : null,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '库存牌堆',
-            style: Theme.of(
-              context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: width + 22,
-            height: height + 12,
-            child: Stack(
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('stock-$pulseToken-$highlighted-$groupsRemaining'),
+      tween: Tween(begin: 0, end: 1),
+      duration: highlighted
+          ? const Duration(milliseconds: 1200)
+          : const Duration(milliseconds: 1),
+      builder: (context, value, _) {
+        final pulse = highlighted ? math.sin(value * math.pi) : 0.0;
+        return Transform.scale(
+          scale: 1 + pulse * 0.03,
+          child: GestureDetector(
+            onTap: enabled ? onTap : null,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (
-                  var layer = 0;
-                  layer < math.min(groupsRemaining, 3);
-                  layer++
-                )
-                  Positioned(
-                    left: layer * 6,
-                    top: layer * 3,
-                    child: IgnorePointer(
-                      child: _PlayingCard(
-                        card: SpiderCard(
-                          id: 'stock_$layer',
-                          suit: SpiderSuit.spades,
-                          rank: 1,
-                          faceUp: false,
+                Text(
+                  '库存牌堆',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: width + 22,
+                  height: height + 12,
+                  child: Stack(
+                    children: [
+                      for (
+                        var layer = 0;
+                        layer < math.min(groupsRemaining, 3);
+                        layer++
+                      )
+                        Positioned(
+                          left: layer * 6,
+                          top: layer * 3,
+                          child: IgnorePointer(
+                            child: _PlayingCard(
+                              card: SpiderCard(
+                                id: 'stock_$layer',
+                                suit: SpiderSuit.spades,
+                                rank: 1,
+                                faceUp: false,
+                              ),
+                              width: width,
+                              selected: false,
+                              hintSource: false,
+                              hintPulseToken: 0,
+                            ),
+                          ),
                         ),
-                        width: width,
-                        selected: false,
-                        hintSource: false,
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _Palette.ink.withValues(alpha: 0.84),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: Color.lerp(
+                                borderColor,
+                                _Palette.paper,
+                                pulse * 0.25,
+                              )!,
+                            ),
+                          ),
+                          child: Text(
+                            '$groupsRemaining 组',
+                            style: const TextStyle(
+                              color: _Palette.paper,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                Positioned(
-                  right: 0,
-                  bottom: 0,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _Palette.ink.withValues(alpha: 0.84),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: borderColor),
-                    ),
-                    child: Text(
-                      '$groupsRemaining 组',
-                      style: const TextStyle(
-                        color: _Palette.paper,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -1436,6 +1662,52 @@ class _MiniBadge extends StatelessWidget {
   }
 }
 
+class _StatusStrip extends StatelessWidget {
+  const _StatusStrip({super.key, required this.text, required this.secret});
+
+  final String text;
+  final bool secret;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: secret
+            ? _Palette.brass.withValues(alpha: 0.16)
+            : Colors.white.withValues(alpha: 0.06),
+        border: Border.all(
+          color: secret
+              ? _Palette.brass.withValues(alpha: 0.45)
+              : Colors.white.withValues(alpha: 0.08),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            secret ? Icons.auto_awesome_rounded : Icons.touch_app_rounded,
+            color: secret ? _Palette.brass : _Palette.paperSoft,
+            size: 18,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: _Palette.paper,
+                height: 1.4,
+                fontWeight: secret ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SectionTitle extends StatelessWidget {
   const _SectionTitle({required this.title, required this.subtitle});
 
@@ -1610,6 +1882,201 @@ class _CardBackPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _HintThreadPainter extends CustomPainter {
+  const _HintThreadPainter({
+    required this.sourceRect,
+    required this.targetRect,
+    required this.progress,
+  });
+
+  final Rect sourceRect;
+  final Rect targetRect;
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final start = Offset(
+      sourceRect.center.dx,
+      sourceRect.top + sourceRect.height * 0.28,
+    );
+    final end = Offset(
+      targetRect.center.dx,
+      targetRect.top + targetRect.height * 0.28,
+    );
+    final control = Offset(
+      (start.dx + end.dx) / 2,
+      math.min(start.dy, end.dy) - 48,
+    );
+
+    final path = Path()
+      ..moveTo(start.dx, start.dy)
+      ..quadraticBezierTo(control.dx, control.dy, end.dx, end.dy);
+
+    final basePaint = Paint()
+      ..color = _Palette.paper.withValues(alpha: 0.18)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawPath(path, basePaint);
+
+    final metrics = path.computeMetrics();
+    if (metrics.isEmpty) {
+      return;
+    }
+    final metric = metrics.first;
+
+    final head = metric.length * progress.clamp(0.08, 1.0);
+    final tail = math.max(0.0, head - metric.length * 0.22);
+    final silkPaint = Paint()
+      ..shader = const LinearGradient(
+        colors: [_Palette.paper, _Palette.brass, _Palette.paper],
+      ).createShader(Rect.fromPoints(start, end))
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawPath(metric.extractPath(tail, head), silkPaint);
+
+    final tangent = metric.getTangentForOffset(head);
+    if (tangent != null) {
+      final glow = Paint()
+        ..color = _Palette.brass.withValues(alpha: 0.92)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+      canvas.drawCircle(tangent.position, 7, glow);
+      canvas.drawCircle(tangent.position, 3.5, Paint()..color = _Palette.paper);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _HintThreadPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.sourceRect != sourceRect ||
+        oldDelegate.targetRect != targetRect;
+  }
+}
+
+class _SpiderMascotRun extends StatelessWidget {
+  const _SpiderMascotRun({required this.runToken});
+
+  final int runToken;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 50,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return TweenAnimationBuilder<double>(
+            key: ValueKey('mascot-run-$runToken'),
+            tween: Tween(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 4800),
+            curve: Curves.easeInOutSine,
+            builder: (context, value, _) {
+              final x = -54 + (constraints.maxWidth + 72) * value;
+              final y = math.sin(value * math.pi * 4) * 6;
+              return Stack(
+                children: [
+                  Positioned(
+                    left: x,
+                    top: 8 + y,
+                    child: Transform.rotate(
+                      angle: math.sin(value * math.pi * 8) * 0.05,
+                      child: CustomPaint(
+                        size: const Size(42, 26),
+                        painter: _SpiderMascotPainter(progress: value),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _SpiderMascotPainter extends CustomPainter {
+  const _SpiderMascotPainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bodyPaint = Paint()..color = _Palette.ink.withValues(alpha: 0.92);
+    final glowPaint = Paint()
+      ..color = _Palette.paper.withValues(alpha: 0.20)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+
+    final bodyCenter = Offset(size.width * 0.54, size.height * 0.56);
+    final headCenter = Offset(size.width * 0.27, size.height * 0.50);
+    canvas.drawCircle(bodyCenter, size.height * 0.28, glowPaint);
+    canvas.drawCircle(bodyCenter, size.height * 0.26, bodyPaint);
+    canvas.drawCircle(headCenter, size.height * 0.16, bodyPaint);
+
+    final legPaint = Paint()
+      ..color = _Palette.ink.withValues(alpha: 0.88)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    final stride = math.sin(progress * math.pi * 10) * 3;
+
+    void drawLeg(
+      double baseY,
+      double midYOffset,
+      double endYOffset,
+      double xJitter,
+    ) {
+      final path = Path()
+        ..moveTo(size.width * 0.38, baseY)
+        ..quadraticBezierTo(
+          size.width * (0.18 + xJitter),
+          baseY + midYOffset,
+          size.width * (0.03 + xJitter * 0.5),
+          baseY + endYOffset,
+        );
+      canvas.drawPath(path, legPaint);
+    }
+
+    for (var leg = 0; leg < 4; leg++) {
+      final topBaseY = size.height * (0.28 + leg * 0.14);
+      final bottomBaseY = size.height * (0.72 - leg * 0.14);
+      final xJitter = leg * 0.02;
+      drawLeg(
+        topBaseY,
+        -6 - leg.toDouble() - stride,
+        -2 - leg.toDouble() * 2 + stride,
+        xJitter,
+      );
+      drawLeg(
+        bottomBaseY,
+        6 + leg.toDouble() + stride,
+        2 + leg.toDouble() * 2 - stride,
+        xJitter,
+      );
+    }
+
+    final eyePaint = Paint()..color = _Palette.brass;
+    canvas.drawCircle(
+      Offset(headCenter.dx - 2, headCenter.dy - 1),
+      1.2,
+      eyePaint,
+    );
+    canvas.drawCircle(
+      Offset(headCenter.dx + 2, headCenter.dy - 1),
+      1.2,
+      eyePaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SpiderMascotPainter oldDelegate) {
+    return oldDelegate.progress != progress;
+  }
 }
 
 String _formatDuration(int seconds) {

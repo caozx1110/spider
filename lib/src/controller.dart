@@ -22,13 +22,18 @@ class SpiderController extends ChangeNotifier {
   SpiderSelection? _selection;
   MoveHint? _hint;
   Timer? _timer;
+  Timer? _hintTimer;
   bool _isReady = false;
+  String _statusMessage = '点击自动落位，长按手动选牌。';
+  int _hintPulseToken = 0;
 
   bool get isReady => _isReady;
   SpiderGameState get state => _state!;
   PlayerProgress get progress => _progress;
   SpiderSelection? get selection => _selection;
   MoveHint? get hint => _hint;
+  String get statusMessage => _statusMessage;
+  int get hintPulseToken => _hintPulseToken;
   bool get canUndo => _undoStack.isNotEmpty;
   bool get canDeal => SpiderEngine.canDealFromStock(state);
   bool get hasPendingAchievement => _pendingAchievements.isNotEmpty;
@@ -39,6 +44,7 @@ class SpiderController extends ChangeNotifier {
 
     if (savedGame != null) {
       _state = savedGame;
+      _setStatus('已恢复上次牌局。点击自动落位，长按手动选牌。');
     } else {
       _state = SpiderEngine.newGame(
         _progress.preferredDifficulty,
@@ -47,6 +53,7 @@ class SpiderController extends ChangeNotifier {
       _progress = _progress.copyWith(gamesStarted: _progress.gamesStarted + 1);
       await _repository.saveProgress(_progress);
       await _repository.saveGame(_state);
+      _setStatus('新牌局已展开。点击牌会优先寻找同花色落点。');
     }
 
     _isReady = true;
@@ -79,7 +86,8 @@ class SpiderController extends ChangeNotifier {
     _state = SpiderEngine.newGame(difficulty, random: _random);
     _undoStack.clear();
     _selection = null;
-    _hint = null;
+    _clearHint();
+    _setStatus('已切换到 ${difficulty.label}。点击自动落位，长按手动选牌。');
 
     await _repository.saveProgress(_progress);
     await _repository.saveGame(_state);
@@ -93,8 +101,26 @@ class SpiderController extends ChangeNotifier {
 
     if (_selection == null) {
       if (SpiderEngine.canSelectStack(state, columnIndex, cardIndex)) {
+        final autoMove = SpiderEngine.bestAutoMove(
+          state,
+          columnIndex,
+          cardIndex,
+        );
+        if (autoMove != null) {
+          unawaited(
+            _applyMoveHint(
+              autoMove,
+              baseStatus: _describeMoveHint(autoMove, auto: true),
+            ),
+          );
+          return;
+        }
+
         _selection = SpiderSelection(column: columnIndex, index: cardIndex);
-        _hint = null;
+        _clearHint();
+        _setStatus(
+          '已手动锁定 ${state.tableau[columnIndex][cardIndex].spokenLabel} 起的一叠牌。',
+        );
         notifyListeners();
       }
       return;
@@ -104,6 +130,7 @@ class SpiderController extends ChangeNotifier {
     if (currentSelection.column == columnIndex &&
         currentSelection.index == cardIndex) {
       _selection = null;
+      _setStatus('已取消手动选牌。');
       notifyListeners();
       return;
     }
@@ -114,9 +141,35 @@ class SpiderController extends ChangeNotifier {
 
     if (SpiderEngine.canSelectStack(state, columnIndex, cardIndex)) {
       _selection = SpiderSelection(column: columnIndex, index: cardIndex);
-      _hint = null;
+      _clearHint();
+      _setStatus(
+        '已切换为 ${state.tableau[columnIndex][cardIndex].spokenLabel} 起的一叠牌。',
+      );
       notifyListeners();
     }
+  }
+
+  void onCardLongPressed(int columnIndex, int cardIndex) {
+    if (!_isReady ||
+        !SpiderEngine.canSelectStack(state, columnIndex, cardIndex)) {
+      return;
+    }
+
+    final currentSelection = _selection;
+    if (currentSelection?.column == columnIndex &&
+        currentSelection?.index == cardIndex) {
+      _selection = null;
+      _setStatus('已取消手动选牌。');
+      notifyListeners();
+      return;
+    }
+
+    _selection = SpiderSelection(column: columnIndex, index: cardIndex);
+    _clearHint();
+    _setStatus(
+      '长按进入手动模式：${state.tableau[columnIndex][cardIndex].spokenLabel}。',
+    );
+    notifyListeners();
   }
 
   void onColumnTapped(int columnIndex) {
@@ -133,15 +186,18 @@ class SpiderController extends ChangeNotifier {
 
     final next = SpiderEngine.dealFromStock(state);
     if (next == null) {
+      if (state.stockDealsRemaining == 0) {
+        _setStatus('库存牌已经发完了。');
+      } else if (state.tableau.any((column) => column.isEmpty)) {
+        _setStatus('先把空列填满，才能从库存发牌。');
+      } else {
+        _setStatus('当前无法从库存发牌。');
+      }
+      notifyListeners();
       return;
     }
 
-    _pushUndo();
-    _state = next;
-    _selection = null;
-    _hint = null;
-    notifyListeners();
-    await _persistAfterMutation();
+    await _applyStateMutation(next, previous: state, baseStatus: '从库存补入一轮新牌。');
   }
 
   Future<void> undo() async {
@@ -155,7 +211,8 @@ class SpiderController extends ChangeNotifier {
       elapsedSeconds: state.elapsedSeconds,
     );
     _selection = null;
-    _hint = null;
+    _clearHint();
+    _setStatus('已撤销上一步。');
     await _repository.saveGame(_state);
     notifyListeners();
   }
@@ -167,13 +224,17 @@ class SpiderController extends ChangeNotifier {
 
     final nextHint = SpiderEngine.findHint(state);
     if (nextHint == null) {
-      _hint = null;
+      _clearHint();
+      _setStatus('暂时没有更优移动，先观察暗牌和空列。');
       notifyListeners();
       return;
     }
 
     _hint = nextHint;
+    _hintPulseToken++;
+    _armHintTimer();
     _state = state.copyWith(hintsUsed: state.hintsUsed + 1);
+    _setStatus(_describeHint(nextHint));
     await _repository.saveGame(_state);
     notifyListeners();
   }
@@ -194,12 +255,20 @@ class SpiderController extends ChangeNotifier {
       return false;
     }
 
-    _pushUndo();
-    _state = next;
-    _selection = null;
-    _hint = null;
-    notifyListeners();
-    unawaited(_persistAfterMutation());
+    final previous = state;
+    unawaited(
+      _applyStateMutation(
+        next,
+        previous: previous,
+        baseStatus: _describeMoveHint(
+          MoveHint.move(
+            fromColumn: currentSelection.column,
+            fromIndex: currentSelection.index,
+            toColumn: targetColumn,
+          ),
+        ),
+      ),
+    );
     return true;
   }
 
@@ -208,6 +277,116 @@ class SpiderController extends ChangeNotifier {
     if (_undoStack.length > 100) {
       _undoStack.removeAt(0);
     }
+  }
+
+  Future<void> _applyMoveHint(
+    MoveHint hint, {
+    required String baseStatus,
+  }) async {
+    if (!hint.isMove) {
+      return;
+    }
+
+    final next = SpiderEngine.moveStack(
+      state,
+      hint.fromColumn!,
+      hint.fromIndex!,
+      hint.toColumn!,
+    );
+    if (next == null) {
+      return;
+    }
+
+    await _applyStateMutation(next, previous: state, baseStatus: baseStatus);
+  }
+
+  Future<void> _applyStateMutation(
+    SpiderGameState next, {
+    required SpiderGameState previous,
+    required String baseStatus,
+  }) async {
+    _pushUndo();
+    _state = next;
+    _selection = null;
+    _clearHint();
+    _setStatus(_decorateStatus(previous, next, baseStatus));
+    notifyListeners();
+    await _persistAfterMutation();
+  }
+
+  String _decorateStatus(
+    SpiderGameState previous,
+    SpiderGameState next,
+    String baseStatus,
+  ) {
+    final notes = <String>[baseStatus];
+
+    if (next.completedRuns > previous.completedRuns) {
+      notes.add('完整顺子已自动收束');
+    }
+
+    if (next.hiddenCardsRevealed > previous.hiddenCardsRevealed) {
+      notes.add('翻开了一张暗牌');
+    }
+
+    return notes.join(' · ');
+  }
+
+  String _describeMoveHint(MoveHint hint, {bool auto = false}) {
+    final movingCard = state.tableau[hint.fromColumn!][hint.fromIndex!];
+    final targetColumn = state.tableau[hint.toColumn!];
+    final prefix = auto ? '自动落位' : '已移动';
+
+    if (targetColumn.isEmpty) {
+      return '$prefix：${movingCard.spokenLabel} 移入空列。';
+    }
+
+    final targetCard = targetColumn.last;
+    if (targetCard.suit == movingCard.suit) {
+      return '$prefix：${movingCard.spokenLabel} 接到 ${targetCard.spokenLabel} 下，保留同花色。';
+    }
+
+    return '$prefix：${movingCard.spokenLabel} 接到 ${targetCard.spokenLabel} 下。';
+  }
+
+  String _describeHint(MoveHint hint) {
+    if (hint.isDeal) {
+      return '提示：现在适合从库存再发一轮。';
+    }
+
+    final movingCard = state.tableau[hint.fromColumn!][hint.fromIndex!];
+    final targetColumn = state.tableau[hint.toColumn!];
+
+    if (targetColumn.isEmpty) {
+      return '提示：把 ${movingCard.spokenLabel} 移到空列，先腾出空间。';
+    }
+
+    final targetCard = targetColumn.last;
+    if (targetCard.suit == movingCard.suit) {
+      return '提示：把 ${movingCard.spokenLabel} 接到 ${targetCard.spokenLabel} 下，优先保持同花色。';
+    }
+
+    return '提示：把 ${movingCard.spokenLabel} 接到 ${targetCard.spokenLabel} 下。';
+  }
+
+  void _clearHint() {
+    _hintTimer?.cancel();
+    _hint = null;
+  }
+
+  void _armHintTimer() {
+    _hintTimer?.cancel();
+    _hintTimer = Timer(const Duration(seconds: 4), () {
+      if (_hint == null) {
+        return;
+      }
+      _hint = null;
+      notifyListeners();
+    });
+  }
+
+  void _setStatus(String message) {
+    _statusMessage = message;
   }
 
   Future<void> _persistAfterMutation() async {
@@ -309,6 +488,7 @@ class SpiderController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _hintTimer?.cancel();
     _timer?.cancel();
     super.dispose();
   }
