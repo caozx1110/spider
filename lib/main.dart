@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'src/controller.dart';
+import 'src/meta_catalog.dart';
 import 'src/models.dart';
 import 'src/progress_repository.dart';
 
@@ -67,6 +68,8 @@ class SpiderHome extends StatefulWidget {
 class _SpiderHomeState extends State<SpiderHome> {
   late final SpiderController _controller;
   bool _showingAchievement = false;
+  bool _showingRogueDraft = false;
+  bool _showMenu = true;
   Timer? _titleComboTimer;
   Timer? _secretRunTimer;
   int _titleTapCount = 0;
@@ -119,6 +122,9 @@ class _SpiderHomeState extends State<SpiderHome> {
 
   Future<void> _handleControllerAnnouncements() async {
     if (!mounted || _showingAchievement || !_controller.hasPendingAchievement) {
+      if (!_showingRogueDraft && _controller.hasPendingRogueDraft) {
+        await _showQueuedRogueDraft();
+      }
       return;
     }
 
@@ -160,10 +166,49 @@ class _SpiderHomeState extends State<SpiderHome> {
     _showingAchievement = false;
     if (_controller.hasPendingAchievement) {
       _handleControllerAnnouncements();
+      return;
+    }
+    if (_controller.hasPendingRogueDraft) {
+      await _showQueuedRogueDraft();
     }
   }
 
-  Future<void> _showDifficultyPicker() async {
+  Future<void> _showQueuedRogueDraft() async {
+    if (!mounted || _showingRogueDraft) {
+      return;
+    }
+    final draft = _controller.consumeRogueDraft();
+    if (draft == null) {
+      return;
+    }
+    _showingRogueDraft = true;
+    await showModalBottomSheet<void>(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return _RogueDraftSheet(
+          draft: draft,
+          onChoose: (boonId) async {
+            Navigator.of(context).pop();
+            await _controller.applyRogueDraftChoice(boonId, draft.milestone);
+          },
+          onSkip: () async {
+            Navigator.of(context).pop();
+            await _controller.skipRogueDraft(draft.milestone);
+          },
+        );
+      },
+    );
+    _showingRogueDraft = false;
+    if (_controller.hasPendingRogueDraft) {
+      await _showQueuedRogueDraft();
+    }
+  }
+
+  Future<void> _showClassicSetup() async {
     final selected = await showModalBottomSheet<SpiderDifficulty>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -193,8 +238,173 @@ class _SpiderHomeState extends State<SpiderHome> {
     );
 
     if (selected != null) {
-      await _controller.startNewGame(selected);
+      await _controller.startNewGame(
+        mode: GameMode.classic,
+        difficulty: selected,
+      );
+      if (mounted) {
+        setState(() {
+          _showMenu = false;
+        });
+      }
     }
+  }
+
+  Future<void> _showRogueSetup() async {
+    final openingDraft = _controller.generateOpeningRogueDraft();
+    var selectedDifficulty = SpiderDifficulty.twoSuits;
+    var selectedBoonId = openingDraft.optionIds.first;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return _SheetFrame(
+              title: '织命远征',
+              subtitle: '选择难度与初始遗物。远征模式会在进度中加入随机事件与遗物流派。',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final difficulty in SpiderDifficulty.values)
+                        ChoiceChip(
+                          label: Text(difficulty.label),
+                          selected: selectedDifficulty == difficulty,
+                          onSelected: (_) {
+                            setModalState(() {
+                              selectedDifficulty = difficulty;
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  const _SectionTitle(
+                    title: '初始遗物',
+                    subtitle: '先拿一件核心遗物，形成本局的第一条 build 方向',
+                  ),
+                  const SizedBox(height: 12),
+                  for (final boonId in openingDraft.optionIds)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _RogueBoonOptionTile(
+                        definition: rogueBoonById[boonId]!,
+                        selected: selectedBoonId == boonId,
+                        onTap: () {
+                          setModalState(() {
+                            selectedBoonId = boonId;
+                          });
+                        },
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () async {
+                        await _controller.startNewGame(
+                          mode: GameMode.rogue,
+                          difficulty: selectedDifficulty,
+                          rogueBoons: [selectedBoonId],
+                        );
+                        if (context.mounted) {
+                          Navigator.of(context).pop();
+                        }
+                        if (mounted) {
+                          setState(() {
+                            _showMenu = false;
+                          });
+                        }
+                      },
+                      icon: const Icon(Icons.auto_awesome_rounded),
+                      label: const Text('开始远征'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showNewGameFlow() async {
+    if (!_controller.isReady) {
+      return;
+    }
+    if (_controller.state.gameMode == GameMode.rogue) {
+      await _showRogueSetup();
+      return;
+    }
+    await _showClassicSetup();
+  }
+
+  Future<void> _showCollectionStudio() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            return _CollectionStudioSheet(controller: _controller);
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showToolInventory() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            return _ToolInventorySheet(controller: _controller);
+          },
+        );
+      },
+    );
+  }
+
+  void _resumeGame() {
+    setState(() {
+      _showMenu = false;
+    });
+  }
+
+  void _openMenu() {
+    setState(() {
+      _showMenu = true;
+    });
+  }
+
+  Future<void> _showModeMenu() async {
+    setState(() {
+      _showMenu = true;
+    });
+  }
+
+  Future<void> _showAchievementsFromMenu() async {
+    await _showAchievementSheet();
+  }
+
+  Future<void> _showMenuAction(GameMode mode) async {
+    if (mode == GameMode.classic) {
+      await _showClassicSetup();
+      return;
+    }
+    await _showRogueSetup();
   }
 
   Future<void> _showAchievementSheet() {
@@ -235,11 +445,17 @@ class _SpiderHomeState extends State<SpiderHome> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [_Palette.feltBright, _Palette.felt, _Palette.feltDeep],
+            colors: _controller.isReady
+                ? [
+                    SkinBundle.fromProgress(_controller.progress).board.primary,
+                    SkinBundle.fromProgress(_controller.progress).board.secondary,
+                    SkinBundle.fromProgress(_controller.progress).board.tertiary,
+                  ]
+                : [_Palette.feltBright, _Palette.felt, _Palette.feltDeep],
           ),
         ),
         child: Stack(
@@ -262,9 +478,11 @@ class _SpiderHomeState extends State<SpiderHome> {
                         final compact = constraints.maxWidth < 1120;
                         final state = _controller.state;
                         final progress = _controller.progress;
+                        final skin = SkinBundle.fromProgress(progress);
 
                         final board = _GameBoard(
                           state: state,
+                          skin: skin,
                           selection: _controller.selection,
                           hint: _controller.hint,
                           hintPulseToken: _controller.hintPulseToken,
@@ -277,13 +495,16 @@ class _SpiderHomeState extends State<SpiderHome> {
                         final header = _HeaderBar(
                           state: state,
                           progress: progress,
+                          skin: skin,
                           canUndo: _controller.canUndo,
                           canDeal: _controller.canDeal,
-                          onNewGame: _showDifficultyPicker,
+                          onNewGame: _showNewGameFlow,
                           onUndo: _controller.undo,
                           onHint: _controller.requestHint,
                           onDeal: _controller.dealFromStock,
                           onAchievements: _showAchievementSheet,
+                          onMenu: _showModeMenu,
+                          onTools: _showToolInventory,
                           statusText: _controller.statusMessage,
                           secretStatus: _secretStatus,
                           onTitleTap: _handleTitleTap,
@@ -292,6 +513,7 @@ class _SpiderHomeState extends State<SpiderHome> {
                         final sidePanel = _SidePanel(
                           state: state,
                           progress: progress,
+                          skin: skin,
                           onAchievements: _showAchievementSheet,
                           statusText:
                               _secretStatus ?? _controller.statusMessage,
@@ -329,8 +551,10 @@ class _SpiderHomeState extends State<SpiderHome> {
                               Positioned.fill(
                                 child: _WinOverlay(
                                   state: state,
-                                  onPlayAgain: _showDifficultyPicker,
+                                  skin: skin,
+                                  onPlayAgain: _showNewGameFlow,
                                   onShowAchievements: _showAchievementSheet,
+                                  onBackToMenu: _openMenu,
                                 ),
                               ),
                             if (_secretStatus != null)
@@ -341,7 +565,22 @@ class _SpiderHomeState extends State<SpiderHome> {
                                 child: IgnorePointer(
                                   child: _SpiderMascotRun(
                                     runToken: _secretRunToken,
+                                    skin: skin,
                                   ),
+                                ),
+                              ),
+                            if (_showMenu)
+                              Positioned.fill(
+                                child: _StartMenuOverlay(
+                                  controller: _controller,
+                                  skin: skin,
+                                  onContinue: _resumeGame,
+                                  onClassic: () => _showMenuAction(
+                                    GameMode.classic,
+                                  ),
+                                  onRogue: () => _showMenuAction(GameMode.rogue),
+                                  onCollectionStudio: _showCollectionStudio,
+                                  onAchievements: _showAchievementsFromMenu,
                                 ),
                               ),
                           ],
@@ -363,6 +602,7 @@ class _HeaderBar extends StatelessWidget {
   const _HeaderBar({
     required this.state,
     required this.progress,
+    required this.skin,
     required this.canUndo,
     required this.canDeal,
     required this.onNewGame,
@@ -370,6 +610,8 @@ class _HeaderBar extends StatelessWidget {
     required this.onHint,
     required this.onDeal,
     required this.onAchievements,
+    required this.onMenu,
+    required this.onTools,
     required this.statusText,
     required this.secretStatus,
     required this.onTitleTap,
@@ -377,6 +619,7 @@ class _HeaderBar extends StatelessWidget {
 
   final SpiderGameState state;
   final PlayerProgress progress;
+  final SkinBundle skin;
   final bool canUndo;
   final bool canDeal;
   final Future<void> Function() onNewGame;
@@ -384,6 +627,8 @@ class _HeaderBar extends StatelessWidget {
   final Future<void> Function() onHint;
   final Future<void> Function() onDeal;
   final Future<void> Function() onAchievements;
+  final Future<void> Function() onMenu;
+  final Future<void> Function() onTools;
   final String statusText;
   final String? secretStatus;
   final VoidCallback onTitleTap;
@@ -417,14 +662,15 @@ class _HeaderBar extends StatelessWidget {
                     Text(
                       '经典蜘蛛纸牌，带成就、断点续局和跨平台界面。',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: _Palette.paperSoft,
+                        color: _Palette.paperSoft.withValues(alpha: 0.92),
                       ),
                     ),
                   ],
                 ),
               ),
-              _InfoPill(label: '当前难度', value: state.difficulty.label),
-              _InfoPill(label: '总胜场', value: '${progress.gamesWon}'),
+              _InfoPill(label: '当前模式', value: state.gameMode.label),
+              _InfoPill(label: '等级', value: 'Lv.${progress.level}'),
+              _InfoPill(label: '积分', value: '${progress.coins}'),
               _InfoPill(label: '连胜', value: '${progress.winStreak}'),
             ],
           ),
@@ -433,6 +679,11 @@ class _HeaderBar extends StatelessWidget {
             spacing: 12,
             runSpacing: 12,
             children: [
+              _ActionButton(
+                label: '菜单',
+                icon: Icons.home_rounded,
+                onPressed: onMenu,
+              ),
               _ActionButton(
                 label: '新游戏',
                 icon: Icons.autorenew_rounded,
@@ -454,6 +705,11 @@ class _HeaderBar extends StatelessWidget {
                 onPressed: canDeal ? onDeal : null,
               ),
               _ActionButton(
+                label: '工具',
+                icon: Icons.inventory_2_rounded,
+                onPressed: onTools,
+              ),
+              _ActionButton(
                 label: '成就',
                 icon: Icons.workspace_premium_rounded,
                 onPressed: onAchievements,
@@ -462,7 +718,9 @@ class _HeaderBar extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 260),
+            duration: Duration(
+              milliseconds: (260 * skin.motion.speedMultiplier).round(),
+            ),
             child: _StatusStrip(
               key: ValueKey(secretStatus ?? statusText),
               text: secretStatus ?? statusText,
@@ -479,12 +737,14 @@ class _SidePanel extends StatelessWidget {
   const _SidePanel({
     required this.state,
     required this.progress,
+    required this.skin,
     required this.onAchievements,
     required this.statusText,
   });
 
   final SpiderGameState state;
   final PlayerProgress progress;
+  final SkinBundle skin;
   final Future<void> Function() onAchievements;
   final String statusText;
 
@@ -525,6 +785,22 @@ class _SidePanel extends StatelessWidget {
                   value: '${state.completedRuns}/8',
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          const _SectionTitle(
+            title: 'Meta 进度',
+            subtitle: '积分用于购买道具和皮肤，经验会持续提升等级',
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _MiniBadge(label: 'Lv.${progress.level}'),
+              _MiniBadge(label: '积分 ${progress.coins}'),
+              _MiniBadge(label: '经验 ${progress.xpIntoLevel}/240'),
+              _MiniBadge(label: state.gameMode.label),
             ],
           ),
           const SizedBox(height: 18),
@@ -573,6 +849,45 @@ class _SidePanel extends StatelessWidget {
               height: 1.35,
             ),
           ),
+          if (state.isRogue && state.rogueBoonIds.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            const _SectionTitle(
+              title: '远征流派',
+              subtitle: '当前肉鸽局已经拿到的遗物组合',
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final boonId in state.rogueBoonIds)
+                  _MiniBadge(label: rogueBoonById[boonId]?.title ?? boonId),
+              ],
+            ),
+          ],
+          const SizedBox(height: 18),
+          const _SectionTitle(
+            title: '工具库存',
+            subtitle: '工坊购买的辅助道具会显示在这里，对局内可从顶部工具按钮使用',
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: toolCatalog
+                .where((tool) => progress.toolChargesFor(tool.id) > 0)
+                .map(
+                  (tool) => _MiniBadge(
+                    label: '${tool.title} × ${progress.toolChargesFor(tool.id)}',
+                  ),
+                )
+                .toList()
+              ..addAll(
+                progress.toolCharges.values.every((value) => value == 0)
+                    ? const [_MiniBadge(label: '暂无随身道具')]
+                    : const [],
+              ),
+          ),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
@@ -591,6 +906,7 @@ class _SidePanel extends StatelessWidget {
 class _GameBoard extends StatelessWidget {
   const _GameBoard({
     required this.state,
+    required this.skin,
     required this.selection,
     required this.hint,
     required this.hintPulseToken,
@@ -601,6 +917,7 @@ class _GameBoard extends StatelessWidget {
   });
 
   final SpiderGameState state;
+  final SkinBundle skin;
   final SpiderSelection? selection;
   final MoveHint? hint;
   final int hintPulseToken;
@@ -683,6 +1000,7 @@ class _GameBoard extends StatelessWidget {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   _StockPile(
+                    skin: skin,
                     width: cardWidth,
                     height: cardHeight,
                     groupsRemaining: state.stockDealsRemaining,
@@ -720,6 +1038,7 @@ class _GameBoard extends StatelessWidget {
                               ) ...[
                                 _TableauColumn(
                                   cards: state.tableau[columnIndex],
+                                  skin: skin,
                                   columnIndex: columnIndex,
                                   width: cardWidth,
                                   height: maxColumnHeight,
@@ -748,6 +1067,7 @@ class _GameBoard extends StatelessWidget {
                                   builder: (context, value, _) {
                                     return CustomPaint(
                                       painter: _HintThreadPainter(
+                                        skin: skin,
                                         sourceRect: hintSourceRect!,
                                         targetRect: hintTargetRect!,
                                         progress: value,
@@ -774,6 +1094,7 @@ class _GameBoard extends StatelessWidget {
 class _TableauColumn extends StatelessWidget {
   const _TableauColumn({
     required this.cards,
+    required this.skin,
     required this.columnIndex,
     required this.width,
     required this.height,
@@ -788,6 +1109,7 @@ class _TableauColumn extends StatelessWidget {
   });
 
   final List<SpiderCard> cards;
+  final SkinBundle skin;
   final int columnIndex;
   final double width;
   final double height;
@@ -817,10 +1139,12 @@ class _TableauColumn extends StatelessWidget {
       key: ValueKey('column-$columnIndex-$hintPulseToken-$targetHint'),
       tween: Tween(begin: 0, end: 1),
       duration: targetHint
-          ? const Duration(milliseconds: 1200)
+          ? Duration(milliseconds: (1200 * skin.motion.speedMultiplier).round())
           : const Duration(milliseconds: 1),
       builder: (context, value, _) {
-        final pulse = targetHint ? math.sin(value * math.pi) : 0.0;
+        final pulse = targetHint
+            ? math.sin(value * math.pi) * skin.motion.pulseScale
+            : 0.0;
         return Transform.scale(
           scale: 1 + pulse * 0.012,
           child: GestureDetector(
@@ -833,7 +1157,7 @@ class _TableauColumn extends StatelessWidget {
                 border: Border.all(
                   color: targetHint
                       ? Color.lerp(
-                          _Palette.brass,
+                          skin.board.accent,
                           _Palette.paper,
                           pulse * 0.35,
                         )!
@@ -853,7 +1177,7 @@ class _TableauColumn extends StatelessWidget {
                 boxShadow: targetHint
                     ? [
                         BoxShadow(
-                          color: _Palette.brass.withValues(
+                          color: skin.board.accent.withValues(
                             alpha: 0.12 + pulse * 0.12,
                           ),
                           blurRadius: 18,
@@ -887,6 +1211,7 @@ class _TableauColumn extends StatelessWidget {
                             : null,
                         child: _PlayingCard(
                           card: cards[index],
+                          skin: skin,
                           width: width,
                           selected:
                               selection?.column == columnIndex &&
@@ -912,6 +1237,7 @@ class _TableauColumn extends StatelessWidget {
 class _PlayingCard extends StatelessWidget {
   const _PlayingCard({
     required this.card,
+    required this.skin,
     required this.width,
     required this.selected,
     required this.hintSource,
@@ -919,6 +1245,7 @@ class _PlayingCard extends StatelessWidget {
   });
 
   final SpiderCard card;
+  final SkinBundle skin;
   final double width;
   final bool selected;
   final bool hintSource;
@@ -929,7 +1256,7 @@ class _PlayingCard extends StatelessWidget {
     final height = width * 1.42;
     final radius = BorderRadius.circular(width * 0.16);
     final accent = selected
-        ? _Palette.brass
+        ? skin.board.accent
         : hintSource
         ? _Palette.paper
         : null;
@@ -938,10 +1265,12 @@ class _PlayingCard extends StatelessWidget {
       key: ValueKey('card-${card.id}-$hintPulseToken-$hintSource-$selected'),
       tween: Tween(begin: 0, end: 1),
       duration: hintSource
-          ? const Duration(milliseconds: 1100)
+          ? Duration(milliseconds: (1100 * skin.motion.speedMultiplier).round())
           : const Duration(milliseconds: 1),
       builder: (context, value, _) {
-        final pulse = hintSource ? math.sin(value * math.pi) : 0.0;
+        final pulse = hintSource
+            ? math.sin(value * math.pi) * skin.motion.pulseScale
+            : 0.0;
         return Transform.translate(
           offset: Offset(0, -6 * pulse),
           child: AnimatedContainer(
@@ -965,20 +1294,24 @@ class _PlayingCard extends StatelessWidget {
                 ),
               ],
               gradient: card.faceUp
-                  ? const LinearGradient(
+                  ? LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFFFFFCF4), Color(0xFFF2E6C9)],
+                      colors: [skin.card.faceStart, skin.card.faceEnd],
                     )
-                  : const LinearGradient(
+                  : LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFF183631), Color(0xFF0A1A18)],
+                      colors: [skin.card.backStart, skin.card.backEnd],
                     ),
             ),
             child: card.faceUp
-                ? _FaceUpCard(card: card)
-                : _FaceDownCard(width: width, accent: accent != null),
+                ? _FaceUpCard(card: card, skin: skin)
+                : _FaceDownCard(
+                    width: width,
+                    accent: accent != null,
+                    skin: skin,
+                  ),
           ),
         );
       },
@@ -987,13 +1320,16 @@ class _PlayingCard extends StatelessWidget {
 }
 
 class _FaceUpCard extends StatelessWidget {
-  const _FaceUpCard({required this.card});
+  const _FaceUpCard({required this.card, required this.skin});
 
   final SpiderCard card;
+  final SkinBundle skin;
 
   @override
   Widget build(BuildContext context) {
-    final color = card.suit.isRed ? _Palette.berry : _Palette.ink;
+    final color = card.suit.isRed
+        ? _Palette.berry
+        : skin.card.symbolTint;
     final rankStyle = TextStyle(
       color: color,
       fontWeight: FontWeight.w700,
@@ -1054,15 +1390,20 @@ class _FaceUpCard extends StatelessWidget {
 }
 
 class _FaceDownCard extends StatelessWidget {
-  const _FaceDownCard({required this.width, required this.accent});
+  const _FaceDownCard({
+    required this.width,
+    required this.accent,
+    required this.skin,
+  });
 
   final double width;
   final bool accent;
+  final SkinBundle skin;
 
   @override
   Widget build(BuildContext context) {
     final border = accent
-        ? _Palette.brass
+        ? skin.board.accent
         : Colors.white.withValues(alpha: 0.22);
     return Padding(
       padding: const EdgeInsets.all(7),
@@ -1070,8 +1411,8 @@ class _FaceDownCard extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(width * 0.12),
           border: Border.all(color: border),
-          gradient: const RadialGradient(
-            colors: [Color(0xFF285248), Color(0xFF102120)],
+          gradient: RadialGradient(
+            colors: [skin.card.backStart, skin.card.backEnd],
           ),
         ),
         child: Stack(
@@ -1094,6 +1435,7 @@ class _FaceDownCard extends StatelessWidget {
 
 class _StockPile extends StatelessWidget {
   const _StockPile({
+    required this.skin,
     required this.width,
     required this.height,
     required this.groupsRemaining,
@@ -1103,6 +1445,7 @@ class _StockPile extends StatelessWidget {
     required this.onTap,
   });
 
+  final SkinBundle skin;
   final double width;
   final double height;
   final int groupsRemaining;
@@ -1114,16 +1457,18 @@ class _StockPile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final borderColor = highlighted
-        ? _Palette.brass
+        ? skin.board.accent
         : Colors.white.withValues(alpha: 0.22);
     return TweenAnimationBuilder<double>(
       key: ValueKey('stock-$pulseToken-$highlighted-$groupsRemaining'),
       tween: Tween(begin: 0, end: 1),
       duration: highlighted
-          ? const Duration(milliseconds: 1200)
+          ? Duration(milliseconds: (1200 * skin.motion.speedMultiplier).round())
           : const Duration(milliseconds: 1),
       builder: (context, value, _) {
-        final pulse = highlighted ? math.sin(value * math.pi) : 0.0;
+        final pulse = highlighted
+            ? math.sin(value * math.pi) * skin.motion.pulseScale
+            : 0.0;
         return Transform.scale(
           scale: 1 + pulse * 0.03,
           child: GestureDetector(
@@ -1159,6 +1504,7 @@ class _StockPile extends StatelessWidget {
                                 rank: 1,
                                 faceUp: false,
                               ),
+                              skin: skin,
                               width: width,
                               selected: false,
                               hintSource: false,
@@ -1275,18 +1621,22 @@ class _CompletedRunsRow extends StatelessWidget {
 class _WinOverlay extends StatelessWidget {
   const _WinOverlay({
     required this.state,
+    required this.skin,
     required this.onPlayAgain,
     required this.onShowAchievements,
+    required this.onBackToMenu,
   });
 
   final SpiderGameState state;
+  final SkinBundle skin;
   final Future<void> Function() onPlayAgain;
   final Future<void> Function() onShowAchievements;
+  final VoidCallback onBackToMenu;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: _Palette.feltDeep.withValues(alpha: 0.58),
+      color: skin.board.tertiary.withValues(alpha: 0.58),
       child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 460),
@@ -1304,7 +1654,7 @@ class _WinOverlay extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  '${state.difficulty.label} 挑战已完成。你收走了全部 8 组顺子。',
+                  '${state.gameMode.label} · ${state.difficulty.label} 已完成。你收走了全部 8 组顺子。',
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: _Palette.paperSoft,
                     height: 1.4,
@@ -1336,6 +1686,11 @@ class _WinOverlay extends StatelessWidget {
                       onPressed: onShowAchievements,
                       icon: const Icon(Icons.workspace_premium_rounded),
                       label: const Text('查看成就'),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: onBackToMenu,
+                      icon: const Icon(Icons.home_rounded),
+                      label: const Text('返回菜单'),
                     ),
                   ],
                 ),
@@ -1662,6 +2017,696 @@ class _MiniBadge extends StatelessWidget {
   }
 }
 
+class _StartMenuOverlay extends StatelessWidget {
+  const _StartMenuOverlay({
+    required this.controller,
+    required this.skin,
+    required this.onContinue,
+    required this.onClassic,
+    required this.onRogue,
+    required this.onCollectionStudio,
+    required this.onAchievements,
+  });
+
+  final SpiderController controller;
+  final SkinBundle skin;
+  final VoidCallback onContinue;
+  final Future<void> Function() onClassic;
+  final Future<void> Function() onRogue;
+  final Future<void> Function() onCollectionStudio;
+  final Future<void> Function() onAchievements;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = controller.progress;
+    final state = controller.state;
+    return Container(
+      color: skin.board.tertiary.withValues(alpha: 0.72),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1180),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: _Panel(
+              padding: const EdgeInsets.all(24),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxWidth < 880;
+                  final hero = Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Silken Spider',
+                        style: Theme.of(context).textTheme.displayLarge?.copyWith(
+                              fontSize: compact ? 54 : 72,
+                              height: 0.92,
+                              letterSpacing: 0.3,
+                            ),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        '把经典模式、积分成长、道具商店、皮肤系统和肉鸽远征织进同一张牌桌。',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: _Palette.paperSoft,
+                              height: 1.45,
+                            ),
+                      ),
+                      const SizedBox(height: 18),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          _MiniBadge(label: 'Lv.${progress.level}'),
+                          _MiniBadge(label: '积分 ${progress.coins}'),
+                          _MiniBadge(label: '经典 ${progress.winsForMode(GameMode.classic)} 胜'),
+                          _MiniBadge(label: '远征 ${progress.winsForMode(GameMode.rogue)} 胜'),
+                        ],
+                      ),
+                      const SizedBox(height: 22),
+                      Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(24),
+                          color: Colors.white.withValues(alpha: 0.05),
+                          border: Border.all(
+                            color: skin.board.accent.withValues(alpha: 0.18),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '当前存档',
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              '继续牌局：${state.gameMode.label} · ${state.difficulty.label}',
+                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                    color: _Palette.paper,
+                                  ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '已装备主题 ${boardThemeById[progress.equippedBoardThemeId]?.title ?? progress.equippedBoardThemeId}  ·  卡牌 ${cardSkinById[progress.equippedCardSkinId]?.title ?? progress.equippedCardSkinId}  ·  动画 ${motionSkinById[progress.equippedMotionSkinId]?.title ?? progress.equippedMotionSkinId}',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: _Palette.paperSoft,
+                                    height: 1.4,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+
+                  final actions = Column(
+                    children: [
+                      _MenuActionCard(
+                        title: '继续当前牌局',
+                        subtitle: '回到正在进行的 ${state.gameMode.label}，保留当前局面。',
+                        icon: Icons.play_circle_fill_rounded,
+                        accent: skin.board.accent,
+                        onTap: onContinue,
+                      ),
+                      const SizedBox(height: 14),
+                      _MenuActionCard(
+                        title: GameMode.classic.label,
+                        subtitle: GameMode.classic.subtitle,
+                        icon: Icons.deck_rounded,
+                        accent: const Color(0xFF8FCFB9),
+                        onTap: () => unawaited(onClassic()),
+                      ),
+                      const SizedBox(height: 14),
+                      _MenuActionCard(
+                        title: GameMode.rogue.label,
+                        subtitle: GameMode.rogue.subtitle,
+                        icon: Icons.auto_awesome_rounded,
+                        accent: const Color(0xFFE4AF69),
+                        onTap: () => unawaited(onRogue()),
+                      ),
+                      const SizedBox(height: 14),
+                      _MenuActionCard(
+                        title: '工坊与皮肤',
+                        subtitle: '购买道具、解锁主题、切换卡牌与动画风格。',
+                        icon: Icons.storefront_rounded,
+                        accent: const Color(0xFFB5C7F5),
+                        onTap: () => unawaited(onCollectionStudio()),
+                      ),
+                      const SizedBox(height: 14),
+                      _MenuActionCard(
+                        title: '成就与战绩',
+                        subtitle: '查看长期目标与当前存档的胜场进度。',
+                        icon: Icons.workspace_premium_rounded,
+                        accent: const Color(0xFFD395A7),
+                        onTap: () => unawaited(onAchievements()),
+                      ),
+                    ],
+                  );
+
+                  if (compact) {
+                    return SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          hero,
+                          const SizedBox(height: 20),
+                          actions,
+                        ],
+                      ),
+                    );
+                  }
+
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(flex: 10, child: hero),
+                      const SizedBox(width: 20),
+                      Expanded(flex: 9, child: actions),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuActionCard extends StatelessWidget {
+  const _MenuActionCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.accent,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color accent;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(26),
+      child: Ink(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(26),
+          color: Colors.white.withValues(alpha: 0.06),
+          border: Border.all(color: accent.withValues(alpha: 0.25)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Row(
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [accent.withValues(alpha: 0.95), accent.withValues(alpha: 0.45)],
+                  ),
+                ),
+                child: Icon(icon, color: _Palette.ink),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: _Palette.paper,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: _Palette.paperSoft,
+                            height: 1.4,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.arrow_forward_rounded,
+                color: accent,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CollectionStudioSheet extends StatelessWidget {
+  const _CollectionStudioSheet({required this.controller});
+
+  final SpiderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = controller.progress;
+    return DefaultTabController(
+      length: 4,
+      child: _SheetFrame(
+        title: '工坊与皮肤',
+        subtitle: '积分 ${progress.coins} · Lv.${progress.level} · 经验 ${progress.xpIntoLevel}/240',
+        child: Column(
+          children: [
+            const TabBar(
+              isScrollable: true,
+              tabs: [
+                Tab(text: '道具'),
+                Tab(text: '主题'),
+                Tab(text: '卡牌'),
+                Tab(text: '动画'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 520,
+              child: TabBarView(
+                children: [
+                  _ToolStoreTab(controller: controller),
+                  _BoardThemeTab(controller: controller),
+                  _CardSkinTab(controller: controller),
+                  _MotionSkinTab(controller: controller),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolInventorySheet extends StatelessWidget {
+  const _ToolInventorySheet({required this.controller});
+
+  final SpiderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetFrame(
+      title: '随身道具',
+      subtitle: '用积分在工坊里补货，道具不会改变规则，只提供额外辅助。',
+      child: Column(
+        children: [
+          for (final tool in toolCatalog)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _StoreTile(
+                title: tool.title,
+                subtitle: tool.description,
+                icon: tool.icon,
+                accent: tool.accent,
+                trailing: FilledButton.tonal(
+                  onPressed: controller.progress.toolChargesFor(tool.id) > 0
+                      ? () => controller.useTool(tool.id)
+                      : null,
+                  child: Text('使用 ${controller.progress.toolChargesFor(tool.id)}'),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolStoreTab extends StatelessWidget {
+  const _ToolStoreTab({required this.controller});
+
+  final SpiderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      itemCount: toolCatalog.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final tool = toolCatalog[index];
+        final progress = controller.progress;
+        final locked = progress.level < tool.unlockLevel;
+        final affordable = progress.coins >= tool.cost;
+        return _StoreTile(
+          title: tool.title,
+          subtitle:
+              '${tool.description}\nLv.${tool.unlockLevel} 解锁 · ${tool.cost} 积分 · 已拥有 ${progress.toolChargesFor(tool.id)}',
+          icon: tool.icon,
+          accent: tool.accent,
+          trailing: FilledButton.tonal(
+            onPressed: locked || !affordable
+                ? null
+                : () => controller.purchaseTool(tool.id),
+            child: Text(locked ? 'Lv.${tool.unlockLevel}' : '购买'),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BoardThemeTab extends StatelessWidget {
+  const _BoardThemeTab({required this.controller});
+
+  final SpiderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      itemCount: boardThemesCatalog.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final item = boardThemesCatalog[index];
+        final progress = controller.progress;
+        final owned = progress.ownedBoardThemeIds.contains(item.id);
+        final equipped = progress.equippedBoardThemeId == item.id;
+        return _StoreTile(
+          title: item.title,
+          subtitle:
+              '${item.description}\nLv.${item.unlockLevel} 解锁 · ${item.cost} 积分',
+          icon: Icons.palette_rounded,
+          accent: item.accent,
+          trailing: _ownershipButton(
+            owned: owned,
+            equipped: equipped,
+            locked: progress.level < item.unlockLevel,
+            affordable: progress.coins >= item.cost,
+            onBuy: () => controller.purchaseBoardTheme(item.id),
+            onEquip: () => controller.equipBoardTheme(item.id),
+            unlockLevel: item.unlockLevel,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _CardSkinTab extends StatelessWidget {
+  const _CardSkinTab({required this.controller});
+
+  final SpiderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      itemCount: cardSkinsCatalog.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final item = cardSkinsCatalog[index];
+        final progress = controller.progress;
+        final owned = progress.ownedCardSkinIds.contains(item.id);
+        final equipped = progress.equippedCardSkinId == item.id;
+        return _StoreTile(
+          title: item.title,
+          subtitle:
+              '${item.description}\nLv.${item.unlockLevel} 解锁 · ${item.cost} 积分',
+          icon: Icons.style_rounded,
+          accent: item.symbolTint,
+          trailing: _ownershipButton(
+            owned: owned,
+            equipped: equipped,
+            locked: progress.level < item.unlockLevel,
+            affordable: progress.coins >= item.cost,
+            onBuy: () => controller.purchaseCardSkin(item.id),
+            onEquip: () => controller.equipCardSkin(item.id),
+            unlockLevel: item.unlockLevel,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _MotionSkinTab extends StatelessWidget {
+  const _MotionSkinTab({required this.controller});
+
+  final SpiderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      itemCount: motionSkinsCatalog.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final item = motionSkinsCatalog[index];
+        final progress = controller.progress;
+        final owned = progress.ownedMotionSkinIds.contains(item.id);
+        final equipped = progress.equippedMotionSkinId == item.id;
+        return _StoreTile(
+          title: item.title,
+          subtitle:
+              '${item.description}\nLv.${item.unlockLevel} 解锁 · ${item.cost} 积分 · 速度 x${item.speedMultiplier.toStringAsFixed(2)}',
+          icon: Icons.motion_photos_auto_rounded,
+          accent: const Color(0xFFA9C1F5),
+          trailing: _ownershipButton(
+            owned: owned,
+            equipped: equipped,
+            locked: progress.level < item.unlockLevel,
+            affordable: progress.coins >= item.cost,
+            onBuy: () => controller.purchaseMotionSkin(item.id),
+            onEquip: () => controller.equipMotionSkin(item.id),
+            unlockLevel: item.unlockLevel,
+          ),
+        );
+      },
+    );
+  }
+}
+
+Widget _ownershipButton({
+  required bool owned,
+  required bool equipped,
+  required bool locked,
+  required bool affordable,
+  required Future<void> Function() onBuy,
+  required Future<void> Function() onEquip,
+  required int unlockLevel,
+}) {
+  if (equipped) {
+    return const FilledButton.tonal(
+      onPressed: null,
+      child: Text('已装备'),
+    );
+  }
+
+  if (owned) {
+    return FilledButton.tonal(
+      onPressed: onEquip,
+      child: const Text('装备'),
+    );
+  }
+
+  return FilledButton.tonal(
+    onPressed: locked || !affordable ? null : onBuy,
+    child: Text(locked ? 'Lv.$unlockLevel' : '购买'),
+  );
+}
+
+class _StoreTile extends StatelessWidget {
+  const _StoreTile({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.accent,
+    required this.trailing,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color accent;
+  final Widget trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
+        color: Colors.white.withValues(alpha: 0.05),
+        border: Border.all(color: accent.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [accent.withValues(alpha: 0.95), accent.withValues(alpha: 0.4)],
+              ),
+            ),
+            child: Icon(icon, color: _Palette.ink),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: _Palette.paper,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: _Palette.paperSoft,
+                        height: 1.45,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          trailing,
+        ],
+      ),
+    );
+  }
+}
+
+class _RogueBoonOptionTile extends StatelessWidget {
+  const _RogueBoonOptionTile({
+    required this.definition,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final RogueBoonDefinition definition;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(24),
+      child: Ink(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: selected
+                ? _Palette.brass
+                : Colors.white.withValues(alpha: 0.14),
+            width: selected ? 2 : 1,
+          ),
+          color: Colors.white.withValues(alpha: selected ? 0.09 : 0.04),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 50,
+                height: 50,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [Color(0xFFDAB06A), Color(0xFF8D642A)],
+                  ),
+                ),
+                child: Icon(definition.icon, color: _Palette.ink),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      definition.title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: _Palette.paper,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${definition.family}流派 · ${definition.description}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: _Palette.paperSoft,
+                            height: 1.45,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_circle_rounded, color: _Palette.brass),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RogueDraftSheet extends StatelessWidget {
+  const _RogueDraftSheet({
+    required this.draft,
+    required this.onChoose,
+    required this.onSkip,
+  });
+
+  final RogueDraft draft;
+  final Future<void> Function(String boonId) onChoose;
+  final Future<void> Function() onSkip;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetFrame(
+      title: draft.title,
+      subtitle: draft.subtitle,
+      child: Column(
+        children: [
+          for (final boonId in draft.optionIds)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _StoreTile(
+                title: rogueBoonById[boonId]!.title,
+                subtitle:
+                    '${rogueBoonById[boonId]!.family}流派 · ${rogueBoonById[boonId]!.description}',
+                icon: rogueBoonById[boonId]!.icon,
+                accent: const Color(0xFFE2AF69),
+                trailing: FilledButton(
+                  onPressed: () => onChoose(boonId),
+                  child: const Text('拿走'),
+                ),
+              ),
+            ),
+          const SizedBox(height: 6),
+          TextButton(
+            onPressed: onSkip,
+            child: const Text('这次先跳过'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StatusStrip extends StatelessWidget {
   const _StatusStrip({super.key, required this.text, required this.secret});
 
@@ -1886,11 +2931,13 @@ class _CardBackPainter extends CustomPainter {
 
 class _HintThreadPainter extends CustomPainter {
   const _HintThreadPainter({
+    required this.skin,
     required this.sourceRect,
     required this.targetRect,
     required this.progress,
   });
 
+  final SkinBundle skin;
   final Rect sourceRect;
   final Rect targetRect;
   final double progress;
@@ -1931,8 +2978,8 @@ class _HintThreadPainter extends CustomPainter {
     final head = metric.length * progress.clamp(0.08, 1.0);
     final tail = math.max(0.0, head - metric.length * 0.22);
     final silkPaint = Paint()
-      ..shader = const LinearGradient(
-        colors: [_Palette.paper, _Palette.brass, _Palette.paper],
+      ..shader = LinearGradient(
+        colors: [_Palette.paper, skin.board.accent, _Palette.paper],
       ).createShader(Rect.fromPoints(start, end))
       ..style = PaintingStyle.stroke
       ..strokeWidth = 4
@@ -1943,7 +2990,7 @@ class _HintThreadPainter extends CustomPainter {
     final tangent = metric.getTangentForOffset(head);
     if (tangent != null) {
       final glow = Paint()
-        ..color = _Palette.brass.withValues(alpha: 0.92)
+        ..color = skin.board.accent.withValues(alpha: 0.92)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
       canvas.drawCircle(tangent.position, 7, glow);
       canvas.drawCircle(tangent.position, 3.5, Paint()..color = _Palette.paper);
@@ -1959,9 +3006,10 @@ class _HintThreadPainter extends CustomPainter {
 }
 
 class _SpiderMascotRun extends StatelessWidget {
-  const _SpiderMascotRun({required this.runToken});
+  const _SpiderMascotRun({required this.runToken, required this.skin});
 
   final int runToken;
+  final SkinBundle skin;
 
   @override
   Widget build(BuildContext context) {
@@ -1972,7 +3020,9 @@ class _SpiderMascotRun extends StatelessWidget {
           return TweenAnimationBuilder<double>(
             key: ValueKey('mascot-run-$runToken'),
             tween: Tween(begin: 0, end: 1),
-            duration: const Duration(milliseconds: 4800),
+            duration: Duration(
+              milliseconds: (4800 * skin.motion.speedMultiplier).round(),
+            ),
             curve: Curves.easeInOutSine,
             builder: (context, value, _) {
               final x = -54 + (constraints.maxWidth + 72) * value;
@@ -1986,7 +3036,10 @@ class _SpiderMascotRun extends StatelessWidget {
                       angle: math.sin(value * math.pi * 8) * 0.05,
                       child: CustomPaint(
                         size: const Size(42, 26),
-                        painter: _SpiderMascotPainter(progress: value),
+                        painter: _SpiderMascotPainter(
+                          progress: value,
+                          skin: skin,
+                        ),
                       ),
                     ),
                   ),
@@ -2001,15 +3054,16 @@ class _SpiderMascotRun extends StatelessWidget {
 }
 
 class _SpiderMascotPainter extends CustomPainter {
-  const _SpiderMascotPainter({required this.progress});
+  const _SpiderMascotPainter({required this.progress, required this.skin});
 
   final double progress;
+  final SkinBundle skin;
 
   @override
   void paint(Canvas canvas, Size size) {
     final bodyPaint = Paint()..color = _Palette.ink.withValues(alpha: 0.92);
     final glowPaint = Paint()
-      ..color = _Palette.paper.withValues(alpha: 0.20)
+      ..color = skin.board.accent.withValues(alpha: 0.20)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
 
     final bodyCenter = Offset(size.width * 0.54, size.height * 0.56);
@@ -2060,7 +3114,7 @@ class _SpiderMascotPainter extends CustomPainter {
       );
     }
 
-    final eyePaint = Paint()..color = _Palette.brass;
+    final eyePaint = Paint()..color = skin.board.accent;
     canvas.drawCircle(
       Offset(headCenter.dx - 2, headCenter.dy - 1),
       1.2,

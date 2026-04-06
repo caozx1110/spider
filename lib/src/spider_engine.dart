@@ -7,6 +7,8 @@ class SpiderEngine {
 
   static SpiderGameState newGame(
     SpiderDifficulty difficulty, {
+    GameMode gameMode = GameMode.classic,
+    List<String> rogueBoonIds = const <String>[],
     Random? random,
   }) {
     final generator = random ?? Random();
@@ -24,6 +26,7 @@ class SpiderEngine {
     }
 
     return SpiderGameState(
+      gameMode: gameMode,
       difficulty: difficulty,
       tableau: tableau,
       stock: deck,
@@ -36,6 +39,8 @@ class SpiderEngine {
       hintsUsed: 0,
       sequencesCompletedThisGame: 0,
       elapsedSeconds: 0,
+      rogueBoonIds: List<String>.of(rogueBoonIds),
+      rogueMilestonesClaimed: const <int>[],
     );
   }
 

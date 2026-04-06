@@ -31,6 +31,7 @@ void main() {
   group('SpiderEngine moves', () {
     test('moving a stack reveals the next facedown card', () {
       final state = SpiderGameState(
+        gameMode: GameMode.classic,
         difficulty: SpiderDifficulty.oneSuit,
         tableau: [
           [
@@ -50,6 +51,8 @@ void main() {
         hintsUsed: 0,
         sequencesCompletedThisGame: 0,
         elapsedSeconds: 0,
+        rogueBoonIds: const [],
+        rogueMilestonesClaimed: const [],
       );
 
       final next = SpiderEngine.moveStack(state, 0, 1, 1);
@@ -62,6 +65,7 @@ void main() {
 
     test('completing a full run removes it from the board', () {
       final state = SpiderGameState(
+        gameMode: GameMode.classic,
         difficulty: SpiderDifficulty.oneSuit,
         tableau: [
           const <SpiderCard>[],
@@ -82,6 +86,8 @@ void main() {
         hintsUsed: 0,
         sequencesCompletedThisGame: 0,
         elapsedSeconds: 0,
+        rogueBoonIds: const [],
+        rogueMilestonesClaimed: const [],
       );
 
       final next = SpiderEngine.moveStack(state, 2, 0, 1);
@@ -94,6 +100,7 @@ void main() {
 
     test('best auto move prefers extending a same-suit chain', () {
       final state = SpiderGameState(
+        gameMode: GameMode.classic,
         difficulty: SpiderDifficulty.fourSuits,
         tableau: [
           [_card('moving', SpiderSuit.spades, 7, true)],
@@ -111,6 +118,8 @@ void main() {
         hintsUsed: 0,
         sequencesCompletedThisGame: 0,
         elapsedSeconds: 0,
+        rogueBoonIds: const [],
+        rogueMilestonesClaimed: const [],
       );
 
       final autoMove = SpiderEngine.bestAutoMove(state, 0, 0);
@@ -123,6 +132,7 @@ void main() {
   group('SpiderEngine stock dealing', () {
     test('cannot deal from stock when a column is empty', () {
       final state = SpiderGameState(
+        gameMode: GameMode.classic,
         difficulty: SpiderDifficulty.oneSuit,
         tableau: [
           const <SpiderCard>[],
@@ -142,6 +152,8 @@ void main() {
         hintsUsed: 0,
         sequencesCompletedThisGame: 0,
         elapsedSeconds: 0,
+        rogueBoonIds: const [],
+        rogueMilestonesClaimed: const [],
       );
 
       expect(SpiderEngine.dealFromStock(state), isNull);
@@ -151,6 +163,7 @@ void main() {
   group('SpiderEngine hints', () {
     test('hint selection follows the same best move preference', () {
       final state = SpiderGameState(
+        gameMode: GameMode.classic,
         difficulty: SpiderDifficulty.fourSuits,
         tableau: [
           [_card('moving', SpiderSuit.spades, 7, true)],
@@ -168,6 +181,8 @@ void main() {
         hintsUsed: 0,
         sequencesCompletedThisGame: 0,
         elapsedSeconds: 0,
+        rogueBoonIds: const [],
+        rogueMilestonesClaimed: const [],
       );
 
       final hint = SpiderEngine.findHint(state);
